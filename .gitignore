@@ -13,4 +13,6 @@ Main
 cabal.sandbox.config
 .stack-work
 .*.sw?
-
+dist-ghcjs
+dist-newstyle
+result

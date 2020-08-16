@@ -1,6 +1,10 @@
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances,
-             GeneralizedNewtypeDeriving, TupleSections #-}
+             GeneralizedNewtypeDeriving, TupleSections,
+             StandaloneDeriving #-}
 module Connections where
+
+import Data.Aeson
+import GHC.Generics (Generic)
 
 import Control.Applicative
 import Data.List
@@ -14,7 +18,7 @@ import Data.Maybe
 import Test.QuickCheck
 
 newtype Name = Name String
-  deriving (Arbitrary,Eq,Ord)
+  deriving (Arbitrary, Eq, Ord, Generic, ToJSON, FromJSON, ToJSONKey, FromJSONKey)
 
 instance Show Name where
   show (Name i) = i
@@ -26,7 +30,7 @@ swapName k (i,j) | k == i    = j
 
 -- | Directions
 data Dir = Zero | One
-  deriving (Eq,Ord)
+  deriving (Eq, Ord, Generic, ToJSON, FromJSON)
 
 instance Show Dir where
   show Zero = "0"
@@ -58,6 +62,9 @@ instance Arbitrary Dir where
 
 -- Faces of the form: [(i,0),(j,1),(k,0)]
 type Face = Map Name Dir
+
+deriving instance ToJSONKey Face
+deriving instance FromJSONKey Face
 
 instance {-# OVERLAPPING #-} Arbitrary Face where
   arbitrary = fromList <$> arbitrary
@@ -134,7 +141,7 @@ data Formula = Dir Dir
              | NegAtom Name
              | Formula :/\: Formula
              | Formula :\/: Formula
-  deriving Eq
+  deriving (Eq, Generic, ToJSON, FromJSON)
 
 instance Show Formula where
   show (Dir Zero)  = "0"
@@ -293,7 +300,7 @@ unionsMap :: Eq b => (a -> [b]) -> [a] -> [b]
 unionsMap f = unions . map f
 
 newtype Nameless a = Nameless { unNameless :: a }
-                   deriving (Eq, Ord)
+                   deriving (Eq, Ord, Generic, ToJSON, FromJSON)
 
 instance Nominal (Nameless a) where
   support _ = []

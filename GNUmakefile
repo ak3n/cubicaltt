@@ -48,7 +48,7 @@ include Makefile
 	$(ALEX) -g $<
 
 bnfc $(GRAMMAR_FILES): Exp.cf
-	$(BNFC) --haskell -d Exp.cf
+	$(BNFC) --haskell --text-token -d Exp.cf
 	@ touch $(GRAMMAR_FILES)
 
 TAGS:; hasktags --etags $(INPUT) $(GRAMMAR)

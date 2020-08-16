@@ -3,6 +3,8 @@
 -- | Convert the concrete syntax into the syntax of cubical TT.
 module Resolver where
 
+import Data.Aeson
+import GHC.Generics (Generic)
 import Control.Applicative
 import Control.Monad
 import Control.Monad.Reader
@@ -71,12 +73,12 @@ flattenPTele (PTele exp typ : xs) = case appsToIdents exp of
 -- | Resolver and environment
 
 data SymKind = Variable | Constructor | PConstructor | Name
-  deriving (Eq,Show)
+  deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
 -- local environment for constructors
 data Env = Env { envModule :: String,
                  variables :: [(Ident,SymKind)] }
-  deriving (Eq,Show)
+  deriving (Eq, Show)
 
 type Resolver a = ReaderT Env (ExceptT String Identity) a
 

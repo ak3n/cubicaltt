@@ -1,6 +1,9 @@
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances #-}
 module CTT where
 
+import Data.Aeson
+import GHC.Generics (Generic)
+
 import Control.Applicative
 import Data.List
 import Data.Maybe
@@ -18,7 +21,7 @@ import Connections
 
 data Loc = Loc { locFile :: String
                , locPos  :: (Int,Int) }
-  deriving Eq
+  deriving (Eq, Generic, ToJSON, FromJSON)
 
 type Ident  = String
 type LIdent = String
@@ -28,13 +31,13 @@ type Tele   = [(Ident,Ter)]
 
 data Label = OLabel LIdent Tele -- Object label
            | PLabel LIdent Tele [Name] (System Ter) -- Path label
-  deriving (Eq,Show)
+  deriving (Eq,Show, Generic, ToJSON, FromJSON)
 
 -- OBranch of the form: c x1 .. xn -> e
 -- PBranch of the form: c x1 .. xn i1 .. im -> e
 data Branch = OBranch LIdent [Ident] Ter
             | PBranch LIdent [Ident] [Name] Ter
-  deriving (Eq,Show)
+  deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
 -- Declarations: x : A = e
 -- A group of mutual declarations is identified by its location. It is used to
@@ -44,7 +47,7 @@ data Decls = MutualDecls Loc [Decl]
            | OpaqueDecl Ident
            | TransparentDecl Ident
            | TransparentAllDecl
-           deriving Eq
+           deriving (Eq, Generic, ToJSON, FromJSON)
 
 declIdents :: [Decl] -> [Ident]
 declIdents decls = [ x | (x,_) <- decls ]
@@ -125,7 +128,7 @@ data Ter = Pi Ter
          | Id Ter Ter Ter
          | IdPair Ter (System Ter)
          | IdJ Ter Ter Ter Ter Ter Ter
-  deriving Eq
+  deriving (Eq, Generic, ToJSON, FromJSON)
 
 -- For an expression t, returns (u,ts) where u is no application and t = u ts
 unApps :: Ter -> (Ter,[Ter])
@@ -184,7 +187,7 @@ data Val = VU
          | VLam Ident Val Val
          | VUnGlueElemU Val Val (System Val)
          | VIdJ Val Val Val Val Val Val
-  deriving Eq
+  deriving (Eq, Generic, ToJSON, FromJSON)
 
 isNeutral :: Val -> Bool
 isNeutral v = case v of
@@ -237,7 +240,7 @@ data Ctxt = Empty
           | Upd Ident Ctxt
           | Sub Name Ctxt
           | Def Loc [Decl] Ctxt
-  deriving (Show)
+  deriving (Show, Generic, ToJSON, FromJSON)
 
 instance Eq Ctxt where
     c == d = case (c, d) of
@@ -254,7 +257,7 @@ instance Eq Ctxt where
 -- only need to affect the lists and not the whole context.
 -- The last list is the list of opaque names
 newtype Env = Env (Ctxt,[Val],[Formula],Nameless (Set Ident))
-  deriving (Eq)
+  deriving (Eq, Generic, ToJSON, FromJSON)
 
 emptyEnv :: Env
 emptyEnv = Env (Empty,[],[],Nameless Set.empty)
@@ -441,7 +444,7 @@ showVal v = case v of
   VPLam{}           -> char '<' <> showPLam v
   VSplit u v        -> showVal u <+> showVal1 v
   VVar x _          -> text x
-  VOpaque x _       -> text ('#':x)
+  VOpaque x _       -> text ("#" ++ x)
   VFst u            -> showVal1 u <> text ".1"
   VSnd u            -> showVal1 u <> text ".2"
   VPathP v0 v1 v2   -> text "PathP" <+> showVals [v0,v1,v2]

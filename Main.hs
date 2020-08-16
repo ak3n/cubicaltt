@@ -1,15 +1,28 @@
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP           #-}
+{-# LANGUAGE JavaScriptFFI #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 module Main where
 
+import Data.Aeson as JSON
 import Control.Monad.Reader
-import qualified Control.Exception as E
-import Data.List
+import Control.Monad.Writer
+import Control.Monad.Identity
+import Control.Exception
+import Control.Lens ((^.))
+import Data.List as L
+import Data.Functor
 import Data.Time
+import Data.Traversable
+import Data.Text as T
+import Data.ByteString.Lazy as BS
+import Data.Text.Encoding as T
 import System.Directory
 import System.FilePath
 import System.Environment
 import System.Console.GetOpt
-import System.Console.Haskeline
-import System.Console.Haskeline.History
 import Text.Printf
 
 import Exp.Lex
@@ -18,190 +31,256 @@ import Exp.Print
 import Exp.Abs hiding (NoArg)
 import Exp.Layout
 import Exp.ErrM
+import Prelude as P
 
-import CTT
+import CTT hiding (def)
 import Resolver
 import qualified TypeChecker as TC
 import qualified Eval as E
 
-type Interpreter a = InputT IO a
+import Data.Aeson
+import Data.Maybe
+import Data.FileEmbed
+import Reflex.Dom
+import GHCJS.DOM (currentDocumentUnchecked)
+import GHCJS.DOM.Element (getElementsByTagName, setAttribute)
+import GHCJS.DOM.HTMLCollection (itemUnsafe)
+import GHCJS.DOM.Types as DOM hiding (Text, Event)
+import GHCJS.DOM.NonElementParentNode (getElementById)
+import qualified Language.Javascript.JSaddle as JS
 
--- Flag handling
-data Flag = Debug | Batch | Help | Version | Time
-  deriving (Eq,Show)
+import Helpers
 
-options :: [OptDescr Flag]
-options = [ Option "d"  ["debug"]   (NoArg Debug)   "run in debugging mode"
-          , Option "b"  ["batch"]   (NoArg Batch)   "run in batch mode"
-          , Option ""   ["help"]    (NoArg Help)    "print help"
-          , Option "-t" ["time"]    (NoArg Time)    "measure time spent computing"
-          , Option ""   ["version"] (NoArg Version) "print version number" ]
+main :: IO ()
+main = mainWidgetWithHead headWidget bodyWidget
 
--- Version number, welcome message, usage and prompt strings
-version, welcome, usage, prompt :: String
-version = "1.0"
-welcome = "cubical, version: " ++ version ++ "  (:h for help)\n"
-usage   = "Usage: cubical [options] <file.ctt>\nOptions:"
-prompt  = "> "
+headWidget :: Widget t ()
+headWidget = do
+  elAttr "meta" ("charset" =: "utf-8") blank
+  elAttr "meta" ("http-equiv" =: "x-ua-compatible" <> "content" =: "ie-edge") blank
+  el "title" (text "CubicalTT")
+  elAttr "meta" ("name" =: "viewport"
+    <> "content" =: "width=device-width, initial-scale=1") blank
+  elAttr "link" ("rel" =: "stylesheet"
+    <> "href" =: "https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css"
+    <> "integrity" =: "sha384-JcKb8q3iqJ61gNV9KGb8thSsNjpSL0n8PARn9HuZOnIxN0hoP+VmmDGMN5t9UJ0Z"
+    <> "crossorigin" =: "anonymous") blank
+  elAttr "link" ("data-name" =: "vs/editor/editor.main"
+    <> "rel" =: "stylesheet"
+    <> "href" =: "https://microsoft.github.io/monaco-editor/node_modules/monaco-editor/min/vs/editor/editor.main.css") blank
+  el "style" $ text "html, body { height: 100%; }"
+
+bodyWidget :: Widget t ()
+bodyWidget = do
+  elAttr "div" ("class" =: "container-fluid d-flex flex-column" <> "style" =: "min-height: 100%;" ) $ do
+    elClass "div" "row" $ do
+      elClass "div" "col-7 mt-2" $ do
+        elClass "ul" "nav nav-tabs" $ do
+          elClass "li" "nav-item" $
+            elAttr "a" ("id" =: "welcome-tab"
+              <> "href" =: "#" <> "class" =: "nav-link tab-link active") $ text "welcome"
+          elClass "li" "nav-item" $
+            elAttr "a" ("id" =: "lecture1-tab"
+              <> "href" =: "#" <> "class" =: "nav-link tab-link") $ text "lecture1"
+          elClass "li" "nav-item" $
+            elAttr "a" ("id" =: "lecture2-tab"
+              <>"href" =: "#" <> "class" =: "nav-link tab-link") $ text "lecture2"
+          elClass "li" "nav-item" $
+            elAttr "a" ("id" =: "lecture3-tab"
+              <> "href" =: "#" <> "class" =: "nav-link tab-link") $ text "lecture3"
+          elClass "li" "nav-item" $
+            elAttr "a" ("id" =: "lecture4-tab"
+              <> "href" =: "#" <> "class" =: "nav-link tab-link") $ text "lecture4"
+    elClass "div" "row flex-grow-1" $ do
+      elClass "div" "col-7 flex-grow-1" $ do
+        elAttr "div" ("id" =: "editor" <> "class" =: "flex-grow-1"
+          <> "style" =: "width:auto;height:600px;border:1px solid grey") blank
+      elClass "div" "col-5 pl-0 flex-grow-1" $ do
+        elAttr "div" ("class" =: "col-md flex-grow-1" <> "id" =: "results-container"
+          <> "style" =: "width:auto;height:600px;border:1px solid grey;overflow-x:scroll;") $
+            el "pre" $ elAttr "code" ("id" =: "results") blank
+        elClass "div" "col-*-* w-100" $ do
+          elClass "div" "input-group mb-3" $ do
+            elClass "div" "input-group-prepend" $
+              elClass "span" "input-group-text" $ text ">"
+            elAttr "input" ("id" =: "eval-input"
+              <> "type" =: "text"
+              <> "class" =: "form-control"
+              <> "style" =: "box-shadow: none;") blank
+            elClass "div" "input-group-append" $
+              elAttr "button" ("id" =: "eval-button" <> "type" =: "button"
+                <> "class" =: "btn btn-outline-secondary") $ text "Eval"
+  let
+    vsPath = "https://microsoft.github.io/monaco-editor/node_modules/monaco-editor/min/vs/"
+  el "script" $ text $ "var app = {}; var require = { paths: { 'vs': '" <> vsPath <>  "'} };"
+  elAttr "script" ("src" =: (vsPath <> "loader.js")) blank
+  elAttr "script" ("src" =: (vsPath <> "editor/editor.main.nls.js")) blank
+  elAttr "script" ("src" =: (vsPath <> "editor/editor.main.js")) blank
+  DOM.liftJSM $ do
+    setupEditorJS <- JS.eval editorSetupScript
+    void $ JS.call setupEditorJS setupEditorJS
+      [ toJSVal welcomeContent
+      , toJSVal lecture1Content
+      , toJSVal lecture2Content
+      , toJSVal lecture3Content
+      , toJSVal lecture4Content
+      , toJSVal (JS.fun loadHandler), toJSVal (JS.fun evalHandler)]
+
+evalHandler :: JSVal -> JSVal -> [JSVal] -> JSM ()
+evalHandler _ _ [tabName, inputContent] = do
+  currentTabName <- JS.valToText tabName
+  mCache <- loadTabCache "repl"
+  case mCache of
+    Just (names, tenv) -> do
+      val <- JS.valToText inputContent
+      evalInput names tenv val
+    _ -> do
+      writeLogAndScroll $ "Couldn't load the cache for REPL. Please, try to load the buffer\n"
+
+allTabsNames :: [Text]
+allTabsNames =
+  [ "welcome"
+  , "lecture1"
+  , "lecture2"
+  , "lecture3"
+  , "lecture4"]
+
+loadTabContent :: Text -> JSM TabWithContent
+loadTabContent name = do
+  loadTabContentJS <- JS.eval $ T.unlines
+    [ "(function(name) {"
+    , "  return app.tabs[name + '-tab'][0].getValue();"
+    , "})"
+    ]
+  tabContentVal <- JS.call loadTabContentJS loadTabContentJS [toJSVal name]
+  val <- JS.valToText tabContentVal
+  return (name, val)
+
+loadAllTabs :: JSM [TabWithContent]
+loadAllTabs = do
+  tabsContentVals <- traverse loadTabContent allTabsNames
+  tabsContent <- traverse JS.valToText tabsContentVals
+  return $ P.zip allTabsNames tabsContent
+
+loadTabCache :: Text -> JSM (Maybe CheckedModule)
+loadTabCache tabName = do
+  mNames :: Maybe Names <-
+    loadDataFromLocalStorage ("load-results-names-" <> tabName)
+  mImports :: Maybe TC.TEnv <-
+    loadDataFromLocalStorage ("load-results-imports-" <> tabName)
+  case (mNames, mImports) of
+    (Just names, Just imports) -> pure $ Just (names, imports)
+    _ -> pure Nothing
+
+loadHandler :: JSVal -> JSVal -> [JSVal] -> JSM ()
+loadHandler _ _ [tabNameVal, contentVal] = do
+  currentTabName <- JS.valToText tabNameVal
+  currentInput <- JS.valToText contentVal
+  (_, _, loadedMods) <- processImports ([],[],[]) (currentTabName, currentInput)
+  initLoop loadedMods
+
+getModule :: TabWithContent -> JSM (Maybe Module)
+getModule (tabName, input) = do
+  -- mModule <- loadDataFromLocalStorage $ "cache-module-" <> tabName
+  -- case mModule of
+  --   Just m -> return $ Just m
+  --   Nothing -> do
+  let
+    ts = lexer $ T.unpack input
+  case pModule ts of
+    Bad s -> do
+      writeLogAndScroll $ T.pack $
+        "Parse failed in " ++ show tabName ++ "\n" ++ show s ++ "\n"
+      return Nothing
+    Ok mod -> do
+      -- saveDataToLocalStorage ("cache-module-" <> tabName) mod
+      return $ Just mod
+
+processImports
+  :: ([Text],[String],[Module])
+  -> TabWithContent
+  -> JSM ([Text],[String],[Module])
+processImports st@(notok,loaded,mods) twc@(tabName, input) = do
+  mMod <- getModule twc
+  case mMod of
+    Nothing -> return st
+    Just mod@(Module (AIdent (_,name)) imp decls) -> do
+      let
+        importModsNames = [T.pack i | Import (AIdent (_,i)) <- imp]
+      importMods <- traverse loadTabContent $
+        P.filter (\i -> i `P.elem` allTabsNames) importModsNames
+      if (name /= T.unpack tabName) then do
+        writeLogAndScroll $ T.pack $ "Module name mismatch in "
+          ++ show tabName ++ " with wrong name " ++ name
+        return st
+      else do
+        (notok1,loaded1,mods1) <- foldM processImports (tabName:notok,loaded,mods) importMods
+        return (notok,loaded1,mods1 ++ [mod])
+
+-- cubicaltt functions
+type Names = [(CTT.Ident,SymKind)]
+
+type TabWithContent = (Text, Text)
+
+type CheckedModule = (Names, TC.TEnv)
+
+initLoop
+  :: [Module]
+  -> JSM ()
+initLoop [] = pure ()
+initLoop mods = do
+  case runResolver $ resolveModules mods of
+    Left err ->
+      writeLogAndScroll $ T.pack $ "Resolver failed: " ++ err ++ "\n"
+    Right (adefs,names) -> do
+      let ns = fmap fst names
+          dups = ns \\ nub ns
+      unless (dups == []) $
+        writeLogAndScroll $ T.pack $ "Warning: the following definitions were shadowed [" ++
+          L.intercalate ", " dups ++ "]\n"
+      saveDataToLocalStorage "load-results-names-repl" names
+      saveDataToLocalStorage "decls-to-process" adefs
+      TC.runDeclss' TC.verboseEnv
+              
+evalInput :: Names -> TC.TEnv -> Text -> JSM ()
+evalInput names tenv input = do
+  writeLogAndScroll $ "> " <> input <> "\n"
+  let
+    (msg, str, mod) = if T.isInfixOf ":n" input
+      then ("NORMEVAL: ", T.drop 2 input, E.normal [])
+      else ("EVAL: ", input, id)
+  case pExp (lexer $ T.unpack str) of
+    Bad err -> writeLogAndScroll $ T.pack $ ("Parse error: " ++ err) <> "\n"
+    Ok exp -> case runResolver $ local (insertIdents names) $ resolveExp exp of
+      Left err -> writeLogAndScroll $ T.pack $ ("Resolver failed: " ++ err) <> "\n"
+      Right body -> do
+        x <- TC.runInfer tenv body
+        case x of
+          Left err -> writeLogAndScroll $ T.pack $ ("Could not type-check: " ++ err) <> "\n"
+          Right _ -> do
+            let
+              e = mod $ E.eval (TC.env tenv) body
+            writeLogAndScroll $ msg <> (T.pack $ show e) <> "\n"
 
 lexer :: String -> [Token]
 lexer = resolveLayout True . myLexer
 
-showTree :: (Show a, Print a) => a -> IO ()
-showTree tree = do
-  putStrLn $ "\n[Abstract Syntax]\n\n" ++ show tree
-  putStrLn $ "\n[Linearized tree]\n\n" ++ printTree tree
+-- files
 
--- Used for auto completion
-searchFunc :: [String] -> String -> [Completion]
-searchFunc ns str = map simpleCompletion $ filter (str `isPrefixOf`) ns
+welcomeContent :: Text
+welcomeContent = decodeUtf8 $ $(embedFile "welcome.ctt")
 
-settings :: [String] -> Settings IO
-settings ns = Settings
-  { historyFile    = Nothing
-  , complete       = completeWord Nothing " \t" $ return . searchFunc ns
-  , autoAddHistory = True }
+lecture1Content :: Text
+lecture1Content = decodeUtf8 $ $(embedFile "lectures/lecture1.ctt")
 
-main :: IO ()
-main = do
-  args <- getArgs
-  case getOpt Permute options args of
-    (flags,files,[])
-      | Help    `elem` flags -> putStrLn $ usageInfo usage options
-      | Version `elem` flags -> putStrLn version
-      | otherwise -> case files of
-       []  -> do
-         putStrLn welcome
-         runInputT (settings []) (loop flags [] [] TC.verboseEnv)
-       [f] -> do
-         putStrLn welcome
-         putStrLn $ "Loading " ++ show f
-         initLoop flags f emptyHistory
-       _   -> putStrLn $ "Input error: zero or one file expected\n\n" ++
-                         usageInfo usage options
-    (_,_,errs) -> putStrLn $ "Input error: " ++ concat errs ++ "\n" ++
-                             usageInfo usage options
+lecture2Content :: Text
+lecture2Content = decodeUtf8 $ $(embedFile "lectures/lecture2.ctt")
 
-shrink :: String -> String
-shrink s = s -- if length s > 1000 then take 1000 s ++ "..." else s
+lecture3Content :: Text
+lecture3Content = decodeUtf8 $ $(embedFile "lectures/lecture3.ctt")
 
--- Initialize the main loop
-initLoop :: [Flag] -> FilePath -> History -> IO ()
-initLoop flags f hist = do
-  -- Parse and type check files
-  (_,_,mods) <- E.catch (imports True ([],[],[]) f)
-                        (\e -> do putStrLn $ unlines $
-                                    ("Exception: " :
-                                     (takeWhile (/= "CallStack (from HasCallStack):")
-                                                   (lines $ show (e :: SomeException))))
-                                  return ([],[],[]))
-  -- Translate to TT
-  let res = runResolver $ resolveModules mods
-  case res of
-    Left err    -> do
-      putStrLn $ "Resolver failed: " ++ err
-      runInputT (settings []) (putHistory hist >> loop flags f [] TC.verboseEnv)
-    Right (adefs,names) -> do
-      -- After resolivng the file check if some definitions were shadowed:
-      let ns = map fst names
-          uns = nub ns
-          dups = ns \\ uns
-      unless (dups == []) $
-        putStrLn $ "Warning: the following definitions were shadowed [" ++
-                   intercalate ", " dups ++ "]"
-      (merr,tenv) <- TC.runDeclss TC.verboseEnv adefs
-      case merr of
-        Just err -> putStrLn $ "Type checking failed: " ++ shrink err
-        Nothing  -> unless (mods == []) $ putStrLn "File loaded."
-      if Batch `elem` flags
-        then return ()
-        else -- Compute names for auto completion
-             runInputT (settings [n | (n,_) <- names])
-               (putHistory hist >> loop flags f names tenv)
+lecture4Content :: Text
+lecture4Content = decodeUtf8 $ $(embedFile "lectures/lecture4.ctt")
 
--- The main loop
-loop :: [Flag] -> FilePath -> [(CTT.Ident,SymKind)] -> TC.TEnv -> Interpreter ()
-loop flags f names tenv = do
-  input <- getInputLine prompt
-  case input of
-    Nothing    -> outputStrLn help >> loop flags f names tenv
-    Just ":q"  -> return ()
-    Just ":r"  -> getHistory >>= lift . initLoop flags f
-    Just (':':'l':' ':str)
-      | ' ' `elem` str -> do outputStrLn "Only one file allowed after :l"
-                             loop flags f names tenv
-      | otherwise      -> getHistory >>= lift . initLoop flags str
-    Just (':':'c':'d':' ':str) -> do lift (setCurrentDirectory str)
-                                     loop flags f names tenv
-    Just ":h"  -> outputStrLn help >> loop flags f names tenv
-    Just str'  ->
-      let (msg,str,mod) = case str' of
-            (':':'n':' ':str) ->
-              ("NORMEVAL: ",str,E.normal [])
-            str -> ("EVAL: ",str,id)
-      in case pExp (lexer str) of
-      Bad err -> outputStrLn ("Parse error: " ++ err) >> loop flags f names tenv
-      Ok  exp ->
-        case runResolver $ local (insertIdents names) $ resolveExp exp of
-          Left  err  -> do outputStrLn ("Resolver failed: " ++ err)
-                           loop flags f names tenv
-          Right body -> do
-            x <- liftIO $ TC.runInfer tenv body
-            case x of
-              Left err -> do outputStrLn ("Could not type-check: " ++ err)
-                             loop flags f names tenv
-              Right _  -> do
-                start <- liftIO getCurrentTime
-                let e = mod $ E.eval (TC.env tenv) body
-                -- Let's not crash if the evaluation raises an error:
-                liftIO $ catch (putStrLn (msg ++ shrink (show e)))
-                               -- (writeFile "examples/nunivalence3.ctt" (show e))
-                               (\e -> putStrLn ("Exception: " ++
-                                                show (e :: SomeException)))
-                stop <- liftIO getCurrentTime
-                -- Compute time and print nicely
-                let time = diffUTCTime stop start
-                    secs = read (takeWhile (/='.') (init (show time)))
-                    rest = read ('0':dropWhile (/='.') (init (show time)))
-                    mins = secs `quot` 60
-                    sec  = printf "%.3f" (fromInteger (secs `rem` 60) + rest :: Float)
-                when (Time `elem` flags) $
-                   outputStrLn $ "Time: " ++ show mins ++ "m" ++ sec ++ "s"
-                -- Only print in seconds:
-                -- when (Time `elem` flags) $ outputStrLn $ "Time: " ++ show time
-                loop flags f names tenv
-
--- (not ok,loaded,already loaded defs) -> to load ->
---   (new not ok, new loaded, new defs)
--- the bool determines if it should be verbose or not
-imports :: Bool -> ([String],[String],[Module]) -> String ->
-           IO ([String],[String],[Module])
-imports v st@(notok,loaded,mods) f
-  | f `elem` notok  = error ("Looping imports in " ++ f)
-  | f `elem` loaded = return st
-  | otherwise       = do
-    b <- doesFileExist f
-    when (not b) $ error (f ++ " does not exist")
-    let prefix = dropFileName f
-    s <- readFile f
-    let ts = lexer s
-    case pModule ts of
-      Bad s -> error ("Parse failed in " ++ show f ++ "\n" ++ show s)
-      Ok mod@(Module (AIdent (_,name)) imp decls) -> do
-        let imp_ctt = [prefix ++ i ++ ".ctt" | Import (AIdent (_,i)) <- imp]
-        when (name /= dropExtension (takeFileName f)) $
-          error ("Module name mismatch in " ++ show f ++ " with wrong name " ++ name)
-        (notok1,loaded1,mods1) <-
-          foldM (imports v) (f:notok,loaded,mods) imp_ctt
-        when v $ putStrLn $ "Parsed " ++ show f ++ " successfully!"
-        return (notok,f:loaded1,mods1 ++ [mod])
-
-help :: String
-help = "\nAvailable commands:\n" ++
-       "  <statement>     infer type and evaluate statement\n" ++
-       "  :n <statement>  normalize statement\n" ++
-       "  :q              quit\n" ++
-       "  :l <filename>   loads filename (and resets environment before)\n" ++
-       "  :cd <path>      change directory to path\n" ++
-       "  :r              reload\n" ++
-       "  :h              display this message\n"
+editorSetupScript :: Text
+editorSetupScript = decodeUtf8 $ $(embedFile "setup.js")

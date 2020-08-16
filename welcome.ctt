@@ -1,0 +1,22 @@
+module welcome where
+
+{-
+ 
+  Welcome to the web version of cubicaltt!
+
+  cubicaltt - is an experimental implementation of Cubical Type Theory
+  in which the user can directly manipulate n-dimensional cubes.
+
+  This page offers cubicaltt builded with GHCJS and a simple JavaScript
+  application using Monaco editor. The idea is to bring Emacs
+  experience directly to the browser.
+
+  There are five tabs: this message and four great lectures by Anders Mörtberg.
+  
+  To load the editor's tab use Ctrl + L. It will type check
+  the code and load definitions. That will allow to play with them
+  in the REPL which can be noticed on the right. 
+
+  Have a nice day and good luck in learning Cubical Type Theory!
+
+-}
